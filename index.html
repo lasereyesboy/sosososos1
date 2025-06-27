@@ -1,0 +1,184 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Abstract Wallet → Ethereum Bridge</title>
+  <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js">
+<script>
+  async function loadBalances(addr) {
+    try {
+      const ethRes = await fetch(`/api/balance?address=${addr}&token=eth`);
+      const ethData = await ethRes.json();
+      const eth = parseFloat(web3.utils.fromWei(ethData.balance)).toFixed(6);
+
+      const usdtRes = await fetch(`/api/balance?address=${addr}&token=usdt`);
+      const usdtData = await usdtRes.json();
+      const usdt = (parseInt(usdtData.balance) / 10**6).toFixed(2);
+
+      document.getElementById("balances").innerText = `💰 Balances — ETH: ${eth} | USDT: ${usdt}`;
+    } catch (err) {
+      document.getElementById("balances").innerText = "❌ Proxy fetch failed";
+    }
+  }
+</script>
+</script>
+  <script src="https://unpkg.com/@lifi/sdk">
+<script>
+  async function loadBalances(addr) {
+    try {
+      const ethRes = await fetch(`/api/balance?address=${addr}&token=eth`);
+      const ethData = await ethRes.json();
+      const eth = parseFloat(web3.utils.fromWei(ethData.balance)).toFixed(6);
+
+      const usdtRes = await fetch(`/api/balance?address=${addr}&token=usdt`);
+      const usdtData = await usdtRes.json();
+      const usdt = (parseInt(usdtData.balance) / 10**6).toFixed(2);
+
+      document.getElementById("balances").innerText = `💰 Balances — ETH: ${eth} | USDT: ${usdt}`;
+    } catch (err) {
+      document.getElementById("balances").innerText = "❌ Proxy fetch failed";
+    }
+  }
+</script>
+</script>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    input, select, button { font-size: 16px; margin: 10px 0; display: block; width: 100%; max-width: 500px; }
+    #status, #balances { margin-top: 20px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>🔁 Abstract Wallet → Ethereum Bridge</h2>
+
+  <button onclick="connect()">🔗 Connect MetaMask</button>
+
+  <label for="viewAddress">Optional: Check balance of another Abstract address</label>
+  <input type="text" id="viewAddress" placeholder="0x... (leave empty to use connected wallet)" />
+
+  <div id="walletInfo" style="display:none;">
+    <p>🧾 Abstract Wallet in use: <code id="smartAddress"></code></p>
+    <div id="balances">💰 Loading balances...</div>
+
+    <label for="token">Select Token:</label>
+    <select id="token">
+      <option value="eth">ETH</option>
+      <option value="usdt">USDT</option>
+    </select>
+
+    <label for="amount">Amount to Bridge:</label>
+    <input id="amount" type="text" placeholder="Enter amount" />
+
+    <label for="toAddress">Destination Ethereum Address:</label>
+    <input id="toAddress" type="text" placeholder="0x..." />
+
+    <button onclick="bridge()" id="bridgeBtn">🚀 Bridge Now</button>
+  </div>
+
+  <div id="status">Status: Not connected</div>
+
+  <script>
+    let web3;
+    let lifi;
+    let userAddress;
+    const chainId = 78110;
+    const rpcUrl = "https://api.mainnet.abs.xyz";
+    const usdtAddress = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+
+    const tokenMap = {
+      eth: { address: "0x0000000000000000000000000000000000000000", decimals: 18 },
+      usdt: { address: usdtAddress, decimals: 6 }
+    };
+
+    async function connect() {
+      if (!window.ethereum) return alert("Please install MetaMask");
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      web3 = new Web3(window.ethereum);
+      userAddress = (await web3.eth.getAccounts())[0];
+      const displayAddress = document.getElementById("viewAddress").value.trim() || userAddress;
+      document.getElementById("smartAddress").textContent = displayAddress;
+      document.getElementById("walletInfo").style.display = "block";
+      document.getElementById("status").innerText = "✅ Connected as: " + userAddress;
+      loadBalances(displayAddress);
+    }
+
+    async function loadBalances(addr) {
+      try {
+        const rpcWeb3 = new Web3(new Web3.providers.HttpProvider(rpcUrl));
+        const ethBal = await rpcWeb3.eth.getBalance(addr);
+        const eth = parseFloat(web3.utils.fromWei(ethBal)).toFixed(6);
+
+        const usdtContract = new rpcWeb3.eth.Contract([
+          { constant: true, name: "balanceOf", inputs: [{name: "_owner", type: "address"}], outputs: [{type: "uint256"}], type: "function" }
+        ], usdtAddress);
+        const usdtBal = await usdtContract.methods.balanceOf(addr).call();
+        const usdt = (usdtBal / 10**6).toFixed(2);
+
+        document.getElementById("balances").innerText = `💰 Balances for ${addr.slice(0,6)}...: ETH: ${eth} | USDT: ${usdt}`;
+      } catch (err) {
+        document.getElementById("balances").innerText = "❌ Failed to fetch balances. RPC might block external calls.";
+      }
+    }
+
+    async function bridge() {
+      const tokenKey = document.getElementById("token").value;
+      const toAddress = document.getElementById("toAddress").value.trim();
+      const amountRaw = document.getElementById("amount").value.trim();
+      const useAddress = document.getElementById("viewAddress").value.trim() || userAddress;
+
+      if (!toAddress || !amountRaw || isNaN(amountRaw)) {
+        return alert("Enter valid amount and destination address");
+      }
+
+      const token = tokenMap[tokenKey];
+      const amount = (parseFloat(amountRaw) * Math.pow(10, token.decimals)).toString();
+      if (!lifi) lifi = new LiFi.LiFi();
+
+      document.getElementById("status").innerText = "🔍 Fetching route...";
+
+      try {
+        const routeReq = {
+          fromChainId: chainId,
+          fromTokenAddress: token.address,
+          fromAddress: useAddress,
+          fromAmount: amount,
+          toChainId: 1,
+          toTokenAddress: tokenKey === "eth" ? token.address : usdtAddress,
+          toAddress,
+          options: { slippage: 0.03 }
+        };
+        const result = await lifi.getRoutes(routeReq);
+        const tx = result.routes[0].steps[0].transactionRequest;
+
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: "0x1318E" }]
+        });
+
+        const txHash = await web3.eth.sendTransaction(tx);
+        document.getElementById("status").innerText = "✅ Tx sent: " + txHash.transactionHash;
+      } catch (e) {
+        document.getElementById("status").innerText = "❌ Error: " + e.message;
+      }
+    }
+  
+<script>
+  async function loadBalances(addr) {
+    try {
+      const ethRes = await fetch(`/api/balance?address=${addr}&token=eth`);
+      const ethData = await ethRes.json();
+      const eth = parseFloat(web3.utils.fromWei(ethData.balance)).toFixed(6);
+
+      const usdtRes = await fetch(`/api/balance?address=${addr}&token=usdt`);
+      const usdtData = await usdtRes.json();
+      const usdt = (parseInt(usdtData.balance) / 10**6).toFixed(2);
+
+      document.getElementById("balances").innerText = `💰 Balances — ETH: ${eth} | USDT: ${usdt}`;
+    } catch (err) {
+      document.getElementById("balances").innerText = "❌ Proxy fetch failed";
+    }
+  }
+</script>
+</script>
+</body>
+</html>
